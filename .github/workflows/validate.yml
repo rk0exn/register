@@ -37,7 +37,8 @@ jobs:
       - name: Get changed domain files
         id: changed
         run: |
-          FILES=$(git diff --name-only HEAD -- domains/*.json | tr '\n' ' ')
+          FILES=$(git diff --name-only --diff-filter=ACMR HEAD -- 'domains/*.json' | tr '\n' ' ')
+          echo "Changed files: $FILES"
           echo "all_changed_files=$FILES" >> $GITHUB_OUTPUT
 
       - name: Run validation
