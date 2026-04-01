@@ -13,11 +13,28 @@ jobs:
       pull-requests: write
 
     steps:
+      - name: Get changed domain files via API
+        id: changed
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+            const domainFiles = files
+              .filter(f => f.filename.startsWith('domains/') && f.filename.endsWith('.json') && !f.filename.endsWith('schema.json'))
+              .filter(f => f.status !== 'removed')
+              .map(f => f.filename);
+            console.log(`Changed domain files: ${domainFiles.join(', ') || '(none)'}`);
+            core.setOutput('all_changed_files', domainFiles.join(' '));
+
       - name: Checkout base (trusted code)
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.ref }}
-          fetch-depth: 0
 
       - name: Fetch PR domain files only
         run: |
@@ -31,13 +48,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Get changed domain files
-        id: changed
-        run: |
-          FILES=$(git diff --name-only --diff-filter=ACMR HEAD -- 'domains/*.json' | tr '\n' ' ')
-          echo "Changed files: $FILES"
-          echo "all_changed_files=$FILES" >> $GITHUB_OUTPUT
 
       - name: Run validation
         id: validate
