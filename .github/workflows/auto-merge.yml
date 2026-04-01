@@ -1,0 +1,129 @@
+name: Auto Merge
+
+on:
+  # Trigger when check suite (validation) completes
+  check_suite:
+    types: [completed]
+  # Also trigger on label changes
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    name: Auto-merge validated PRs
+    runs-on: ubuntu-latest
+    # Only run on completed check suites with success conclusion
+    if: >
+      (github.event_name == 'check_suite' && github.event.check_suite.conclusion == 'success') ||
+      (github.event_name == 'pull_request')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check and merge
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Get open PRs
+            let prs = [];
+
+            if (context.eventName === 'pull_request') {
+              prs = [context.payload.pull_request];
+            } else {
+              // check_suite event - find associated PRs
+              const pulls = context.payload.check_suite?.pull_requests || [];
+              for (const pr of pulls) {
+                const { data } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                });
+                prs.push(data);
+              }
+            }
+
+            for (const pr of prs) {
+              if (pr.state !== 'open') continue;
+
+              console.log(`Checking PR #${pr.number}: ${pr.title}`);
+
+              // Get PR labels
+              const labels = pr.labels.map(l => l.name);
+
+              // Only auto-merge 'register' PRs (not update/delete which need review)
+              if (!labels.includes('register')) {
+                console.log(`  Skipping: no 'register' label`);
+                continue;
+              }
+
+              // Check if it has 'non-domain' label (means non-domain files changed)
+              if (labels.includes('non-domain')) {
+                console.log(`  Skipping: has 'non-domain' label (needs manual review)`);
+                continue;
+              }
+
+              // Check all status checks pass
+              const { data: checks } = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: pr.head.sha,
+              });
+
+              // Must have at least one check run
+              if (checks.check_runs.length === 0) {
+                console.log(`  Skipping: no check runs found yet`);
+                continue;
+              }
+
+              const allPassed = checks.check_runs.every(
+                cr => cr.conclusion === 'success' || cr.conclusion === 'skipped'
+              );
+
+              if (!allPassed) {
+                console.log(`  Skipping: not all checks passed`);
+                continue;
+              }
+
+              // Only merge if PR changes only domain files
+              const { data: files } = await github.rest.pulls.listFiles({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+              });
+
+              const allDomainFiles = files.every(
+                f => f.filename.startsWith('domains/') && f.filename.endsWith('.json') && !f.filename.endsWith('schema.json')
+              );
+
+              if (!allDomainFiles) {
+                console.log(`  Skipping: contains non-domain file changes`);
+                continue;
+              }
+
+              // Auto-merge
+              try {
+                await github.rest.pulls.merge({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                  merge_method: 'squash',
+                  commit_title: `Register ${pr.title} (#${pr.number})`,
+                });
+                console.log(`  ✅ Auto-merged PR #${pr.number}`);
+
+                // Add comment
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body: `## 🎉 自動マージ完了\n\nバリデーションに成功したため、自動的にマージされました。\nDNS レコードは数分以内に反映されます。\n\n---\n*🤖 Automated merge by is-a.net*`,
+                });
+              } catch (e) {
+                console.log(`  ❌ Failed to merge: ${e.message}`);
+              }
+            }
