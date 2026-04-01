@@ -10,6 +10,9 @@ jobs:
   validate:
     name: Validate domain files
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - name: Checkout
@@ -33,7 +36,105 @@ jobs:
           files: "domains/*.json"
 
       - name: Run validation
+        id: validate
         env:
           CHANGED_FILES: ${{ steps.changed.outputs.all_changed_files }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-        run: npm run validate
+        run: |
+          set +e
+          OUTPUT=$(npm run validate 2>&1)
+          EXIT_CODE=$?
+          echo "$OUTPUT"
+          # Save output for comment
+          {
+            echo "output<<EOF"
+            echo "$OUTPUT"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          exit $EXIT_CODE
+        continue-on-error: true
+
+      - name: Comment on PR (success)
+        if: steps.validate.outputs.exit_code == '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## ✅ バリデーション成功
+
+            すべてのドメインファイルが正常に検証されました。
+            マージをお待ちください。
+
+            ---
+            *🤖 Automated validation by is-a.net*`;
+
+            // Delete previous bot comments
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            for (const comment of comments.data) {
+              if (comment.body.includes('Automated validation by is-a.net')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                });
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      - name: Comment on PR (failure)
+        if: steps.validate.outputs.exit_code != '0'
+        uses: actions/github-script@v7
+        env:
+          VALIDATION_OUTPUT: ${{ steps.validate.outputs.output }}
+        with:
+          script: |
+            const output = process.env.VALIDATION_OUTPUT;
+            const body = `## ❌ バリデーション失敗
+
+            以下のエラーを修正してください:
+
+            \`\`\`
+            ${output}
+            \`\`\`
+
+            修正後、再度 push してください。
+
+            ---
+            *🤖 Automated validation by is-a.net*`;
+
+            // Delete previous bot comments
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            for (const comment of comments.data) {
+              if (comment.body.includes('Automated validation by is-a.net')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                });
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      - name: Fail if validation failed
+        if: steps.validate.outputs.exit_code != '0'
+        run: exit 1
