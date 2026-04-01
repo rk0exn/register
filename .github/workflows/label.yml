@@ -16,7 +16,7 @@
 name: Label PR
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
     types: [opened, synchronize]
 
@@ -30,34 +30,27 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get changed files
-        id: changed
-        uses: tj-actions/changed-files@v46
-        with:
-          files: "domains/*.json"
-
       - name: Detect and apply labels
         uses: actions/github-script@v7
         with:
           script: |
-            const added = '${{ steps.changed.outputs.added_files }}'.split(' ').filter(f => f.startsWith('domains/') && f.endsWith('.json') && !f.endsWith('schema.json'));
-            const modified = '${{ steps.changed.outputs.modified_files }}'.split(' ').filter(f => f.startsWith('domains/') && f.endsWith('.json') && !f.endsWith('schema.json'));
-            const deleted = '${{ steps.changed.outputs.deleted_files }}'.split(' ').filter(f => f.startsWith('domains/') && f.endsWith('.json') && !f.endsWith('schema.json'));
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+
+            const domainFilter = f => f.filename.startsWith('domains/') && f.filename.endsWith('.json') && !f.filename.endsWith('schema.json');
+            const added = files.filter(f => f.status === 'added' && domainFilter(f));
+            const modified = files.filter(f => (f.status === 'modified' || f.status === 'renamed') && domainFilter(f));
+            const deleted = files.filter(f => f.status === 'removed' && domainFilter(f));
+            const nonDomain = files.filter(f => !f.filename.startsWith('domains/'));
 
             const labels = [];
-
             if (added.length > 0) labels.push('register');
             if (modified.length > 0) labels.push('update');
             if (deleted.length > 0) labels.push('delete');
-
-            // Check for non-domain file changes
-            const allChanged = '${{ steps.changed.outputs.all_changed_files }}'.split(' ').filter(Boolean);
-            const nonDomain = allChanged.filter(f => !f.startsWith('domains/'));
             if (nonDomain.length > 0) labels.push('non-domain');
 
             if (labels.length > 0) {
